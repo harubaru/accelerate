@@ -41,6 +41,49 @@ if is_tpu_available(check_device=False):
 from .logging import get_logger
 from .state import PartialState
 
+from tensorizer import TensorDeserializer, TensorSerializer
+import json
+
+
+def flatten_dict_to_skeleton(d, parent_key=''):
+    flat, skel = {}, {}
+    if isinstance(d, dict):
+        for k, v in d.items():
+            new_key = f"{parent_key}.{k}" if parent_key else k
+            sub_flat, sub_skel = flatten_dict_to_skeleton(v, new_key)
+            flat.update(sub_flat)
+            skel[k] = sub_skel
+    elif isinstance(d, list):
+        skel_list = []
+        for idx, item in enumerate(d):
+            list_key = f"{parent_key}.{idx}"
+            sub_flat, sub_skel = flatten_dict_to_skeleton(item, list_key)
+            flat.update(sub_flat)
+            skel_list.append(sub_skel)
+        return flat, skel_list
+    else:
+        if isinstance(d, torch.Tensor):
+            flat[parent_key] = d
+            return flat, None
+        else:
+            return flat, d
+    return flat, skel
+
+
+
+def unflatten_to_skeleton(flat, skel):
+    for k, v in flat.items():
+        keys, d = k.split("."), skel
+        for key in keys[:-1]:
+            if isinstance(d, list):
+                d = d[int(key)]
+            elif isinstance(d, dict):
+                d = d.setdefault(key, {})
+        if isinstance(d, list):
+            d[int(keys[-1])] = v
+        else:
+            d[keys[-1]] = v
+    return skel
 
 logger = get_logger(__name__)
 
@@ -54,6 +97,7 @@ def save_accelerator_state(
     process_index: int,
     scaler: GradScaler = None,
     save_on_each_node: bool = False,
+    use_tensorizer: bool = False,
 ):
     """
     Saves the current states of the models, optimizers, scaler, and RNG generators to a given directory.
@@ -80,14 +124,26 @@ def save_accelerator_state(
     for i, state in enumerate(model_states):
         weights_name = f"{MODEL_NAME}.bin" if i == 0 else f"{MODEL_NAME}_{i}.bin"
         output_model_file = os.path.join(output_dir, weights_name)
-        save(state, output_model_file, save_on_each_node=save_on_each_node)
+        if use_tensorizer:
+            serializer = TensorSerializer(output_model_file)
+            serializer.write_module(state)
+            serializer.close()
+        else:
+            save(state, output_model_file, save_on_each_node=save_on_each_node)
         logger.info(f"Model weights saved in {output_model_file}")
     # Optimizer states
     for i, opt in enumerate(optimizers):
         state = opt.state_dict()
         optimizer_name = f"{OPTIMIZER_NAME}.bin" if i == 0 else f"{OPTIMIZER_NAME}_{i}.bin"
         output_optimizer_file = os.path.join(output_dir, optimizer_name)
-        save(state, output_optimizer_file, save_on_each_node=save_on_each_node)
+        if use_tensorizer:
+            flat, skel = flatten_dict_to_skeleton(state)
+            json.dump(skel, open(output_optimizer_file+'.json', 'w'))
+            serializer = TensorSerializer(output_optimizer_file)
+            serializer.write_state_dict(flat)
+            serializer.close()
+        else:
+            save(state, output_optimizer_file, save_on_each_node=save_on_each_node)
         logger.info(f"Optimizer state saved in {output_optimizer_file}")
     # Scheduler states
     for i, scheduler in enumerate(schedulers):
@@ -143,6 +199,7 @@ def load_accelerator_state(
     process_index,
     scaler=None,
     map_location=None,
+    use_tensorizer=False,
     **load_model_func_kwargs,
 ):
     """
@@ -178,15 +235,27 @@ def load_accelerator_state(
     for i, model in enumerate(models):
         weights_name = f"{MODEL_NAME}.bin" if i == 0 else f"{MODEL_NAME}_{i}.bin"
         input_model_file = os.path.join(input_dir, weights_name)
-        models[i].load_state_dict(torch.load(input_model_file, map_location=map_location), **load_model_func_kwargs)
+        if use_tensorizer:
+            deserializer = TensorDeserializer(input_model_file, device=map_location)
+            deserializer.load_into_module(models[i])
+            deserializer.close()
+        else:
+            models[i].load_state_dict(torch.load(input_model_file, map_location=map_location), **load_model_func_kwargs)
     logger.info("All model weights loaded successfully")
 
     # Optimizer states
     for i, opt in enumerate(optimizers):
         optimizer_name = f"{OPTIMIZER_NAME}.bin" if i == 0 else f"{OPTIMIZER_NAME}_{i}.bin"
         input_optimizer_file = os.path.join(input_dir, optimizer_name)
-        optimizer_state = torch.load(input_optimizer_file, map_location=map_location)
-        optimizers[i].load_state_dict(optimizer_state)
+        if use_tensorizer:
+            deserializer = TensorDeserializer(input_optimizer_file, device=map_location)
+            optimizer_state = json.load(open(input_optimizer_file+'.json', 'r'))
+            optimizer_state = unflatten_to_skeleton(deserializer, optimizer_state)
+            optimizers[i].load_state_dict(optimizer_state)
+            deserializer.close()
+        else:
+            optimizer_state = torch.load(input_optimizer_file, map_location=map_location)
+            optimizers[i].load_state_dict(optimizer_state)
     logger.info("All optimizer states loaded successfully")
 
     # Scheduler states

@@ -2691,7 +2691,7 @@ class Accelerator:
         self._save_model_state_pre_hook[handle.id] = hook
         return handle
 
-    def save_state(self, output_dir: str = None, **save_model_func_kwargs):
+    def save_state(self, output_dir: str = None, use_tensorizer: bool = False, **save_model_func_kwargs):
         """
         Saves the current states of the model, optimizer, scaler, RNG generators, and registered objects to a folder.
 
@@ -2777,7 +2777,10 @@ class Accelerator:
                 model.save_checkpoint(output_dir)
                 logger.info(f"Megatron-LM Model , Optimizer and Scheduler saved to output dir {output_dir}")
             else:
-                weights.append(self.get_state_dict(model, unwrap=False))
+                if use_tensorizer:
+                    weights.append(model)
+                else:
+                    weights.append(self.get_state_dict(model, unwrap=False))
 
         # Save the optimizers taking care of FSDP and DeepSpeed nuances
         optimizers = []
@@ -2816,6 +2819,7 @@ class Accelerator:
             self.state.process_index,
             self.scaler,
             save_on_each_node=self.project_configuration.save_on_each_node,
+            use_tensorizer=use_tensorizer
         )
         for i, obj in enumerate(self._custom_objects):
             save_custom_state(obj, output_dir, i, save_on_each_node=self.project_configuration.save_on_each_node)
@@ -2853,7 +2857,7 @@ class Accelerator:
         self._load_model_state_pre_hook[handle.id] = hook
         return handle
 
-    def load_state(self, input_dir: str = None, **load_model_func_kwargs):
+    def load_state(self, input_dir: str = None, use_tensorizer: bool = False, **load_model_func_kwargs):
         """
         Loads the current states of the model, optimizer, scaler, RNG generators, and registered objects.
 
@@ -2968,6 +2972,7 @@ class Accelerator:
             self.state.process_index,
             self.scaler,
             map_location,
+            use_tensorizer,
             **load_model_func_kwargs,
         )
         custom_checkpoints = [
