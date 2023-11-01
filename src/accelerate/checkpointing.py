@@ -236,7 +236,7 @@ def load_accelerator_state(
         weights_name = f"{MODEL_NAME}.bin" if i == 0 else f"{MODEL_NAME}_{i}.bin"
         input_model_file = os.path.join(input_dir, weights_name)
         if use_tensorizer:
-            deserializer = TensorDeserializer(input_model_file, device=map_location)
+            deserializer = TensorDeserializer(input_model_file, device=map_location, plaid_mode=True)
             deserializer.load_into_module(models[i])
             deserializer.close()
         else:
@@ -248,7 +248,7 @@ def load_accelerator_state(
         optimizer_name = f"{OPTIMIZER_NAME}.bin" if i == 0 else f"{OPTIMIZER_NAME}_{i}.bin"
         input_optimizer_file = os.path.join(input_dir, optimizer_name)
         if use_tensorizer:
-            deserializer = TensorDeserializer(input_optimizer_file, device=map_location)
+            deserializer = TensorDeserializer(input_optimizer_file, device=map_location, plaid_mode=True)
             optimizer_state = json.load(open(input_optimizer_file+'.json', 'r'))
             optimizer_state = unflatten_to_skeleton(deserializer, optimizer_state)
             optimizers[i].load_state_dict(optimizer_state)
